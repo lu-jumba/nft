@@ -38,7 +38,9 @@ type Contract struct {
 	EndDate          time.Time `json:"end_date"`
 	Void             bool      `json:"void"`
 	ContractTypeUUID string    `json:"contract_type_uuid"`
-	ClaimIndex       []string  `gorm:"-" json:"claim_index,omitempty"` // Handled in application logic
+	ClaimIndex       []string     `gorm:"foreignKey:ContractUUID" json:"claim_index,omitempty"`
+
+	//ClaimIndex       []string  `gorm:"-" json:"claim_index,omitempty"` // Handled in application logic
 }
 
 type Item struct {
