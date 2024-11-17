@@ -127,7 +127,7 @@ func (s ClaimStatus) MarshalJSON() ([]byte, error) {
 
 
 
-func (u *User) Contacts(db *gorm.DB) ([]Contract, error) {
+func (u *User) Contracts(db *gorm.DB) ([]Contract, error) {
 	var contracts []Contract
 	err := db.Where("uuid IN ?", u.ContractIndex).Find(&contracts).Error
 	if err != nil {

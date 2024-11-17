@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -167,15 +168,7 @@ func fileClaim(db *gorm.DB, args string) error {
 		return fmt.Errorf("invalid input: %v", err)
 	}
 
-	// Check if the contract exists
-	var contract Contract
-	if err := db.Where("uuid = ?", dto.ContractUUID).First(&contract).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
-			return fmt.Errorf("contract not found: %s", dto.ContractUUID)
-		}
-		return fmt.Errorf("failed to fetch contract: %v", err)
-	}
-
+	
 	// Create the claim
 	claim := Claim{
 		UUID:         dto.UUID,
@@ -185,6 +178,16 @@ func fileClaim(db *gorm.DB, args string) error {
 		IsTheft:      dto.IsTheft,
 		Status:       ClaimStatusNew,
 	}
+
+	// Check if the contract exists
+	var contract Contract
+	if err := db.Where("uuid = ?", dto.ContractUUID).First(&claim).Error; err != nil {  //was First(&contract) 
+		if err == gorm.ErrRecordNotFound {
+			return fmt.Errorf("contract not found: %s", dto.ContractUUID)
+		}
+		return fmt.Errorf("failed to fetch contract: %v", err)
+	}
+
 
 	// Save the claim to the database
 	if err := db.Create(&claim).Error; err != nil {
@@ -200,4 +203,273 @@ func fileClaim(db *gorm.DB, args string) error {
 	return nil
 }
 
+
+func processClaim(db *gorm.DB, args string) error {
+	// Parse input arguments
+	var input struct {
+		UUID         string              `json:"uuid"`
+		ContractUUID string              `json:"contract_uuid"`
+		Status       ClaimStatus  `json:"status"`
+		Reimbursable float32             `json:"reimbursable"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return fmt.Errorf("invalid input: %v", err)
+	}
+
+	// Fetch the claim
+	var claim Claim
+	if err := db.Where("uuid = ? AND contract_uuid = ?", input.UUID, input.ContractUUID).First(&claim).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("claim not found for UUID: %s", input.UUID)
+		}
+		return fmt.Errorf("failed to fetch claim: %v", err)
+	}
+
+	// Validation logic
+	if !claim.IsTheft && claim.Status != ClaimStatusNew {
+		return errors.New("cannot change the status of a non-new claim")
+	}
+	if claim.IsTheft && claim.Status == ClaimStatusNew {
+		return errors.New("theft must first be confirmed by authorities")
+	}
+
+	// Update the claim status
+	claim.Status = input.Status
+	switch input.Status {
+	case ClaimStatusRepair:
+		// Approve repair
+		if claim.IsTheft {
+			return errors.New("cannot repair stolen items")
+		}
+		claim.Reimbursable = 0
+
+		// Create a repair order
+		var contract Contract
+		if err := db.Where("uuid = ?", input.ContractUUID).First(&claim).Error; err != nil {  //was First(&contract)
+			return fmt.Errorf("contract not found for UUID: %s", input.ContractUUID)
+		}
+
+		repairOrder := RepairOrder{
+			Item:         contract.Item,
+			ClaimUUID:    input.UUID,
+			ContractUUID: input.ContractUUID,
+			Ready:        false,
+		}
+		if err := db.Create(&repairOrder).Error; err != nil {
+			return fmt.Errorf("failed to create repair order: %v", err)
+		}
+
+	case ClaimStatusReimbursement:
+		// Approve reimbursement
+		claim.Reimbursable = input.Reimbursable
+		if claim.IsTheft {
+			// Fetch and void the associated contract
+			var contract Contract
+			if err := db.Where("uuid = ?", input.ContractUUID).First(&claim).Error; err != nil { //was First(&contract)
+				return fmt.Errorf("contract not found for UUID: %s", input.ContractUUID)
+			}
+			contract.Void = true
+			if err := db.Save(&contract).Error; err != nil {
+				return fmt.Errorf("failed to update contract: %v", err)
+			}
+		}
+
+	case ClaimStatusRejected:
+		// Mark the claim as rejected
+		claim.Reimbursable = 0
+
+	default:
+		return errors.New("unknown status change")
+	}
+
+	// Save the updated claim
+	if err := db.Save(&claim).Error; err != nil {
+		return fmt.Errorf("failed to update claim: %v", err)
+	}
+
+	return nil
+}
+
+
+
+func authUser(db *gorm.DB, args string) (bool, error) {
+	// Parse input arguments
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return false, fmt.Errorf("invalid input: %v", err)
+	}
+
+	// Fetch the user from the database
+	var user User
+	if err := db.Where("username = ?", input.Username).First(&user).Error; err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return false, nil // User not found, authentication fails
+		}
+		return false, fmt.Errorf("failed to fetch user: %v", err)
+	}
+
+	// Verify the password
+	authenticated := user.Password == input.Password
+
+	return authenticated, nil
+}
+
+
+func getUser(db *gorm.DB, args string) (map[string]string, error) {
+	// Parse input arguments
+	var input struct {
+		Username string `json:"username"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return nil, fmt.Errorf("invalid input: %v", err)
+	}
+
+	// Fetch the user from the database
+	var user User
+	if err := db.Where("username = ?", input.Username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, nil // User not found, return nil map
+		}
+		return nil, fmt.Errorf("failed to fetch user: %v", err)
+	}
+
+	// Construct the response
+	response := map[string]string{
+		"username":  user.Username,
+		"first_name": user.FirstName,
+		"last_name":  user.LastName,
+	}
+
+	return response, nil
+}
+
+
+/*
+type User struct {
+    Username        string    `gorm:"primaryKey" json:"username"`
+    Password        string    `json:"password"`
+    Email           string    `json:"email"`
+    FailedAttempts  int       `json:"failed_attempts"`
+    LastFailedLogin time.Time `json:"last_failed_login"`
+}
+
+
+package main
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"time"
+
+	"gorm.io/gorm"
+	"myproject/models" // Adjust to match your project structure
+)
+
+const lockoutDuration = 2 * time.Minute
+const maxFailedAttempts = 3
+
+func authUser(db *gorm.DB, args string) (bool, error) {
+	// Parse input arguments
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return false, fmt.Errorf("invalid input: %v", err)
+	}
+
+	// Fetch the user from the database
+	var user models.User
+	if err := db.Where("username = ?", input.Username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, nil // User not found, authentication fails
+		}
+		return false, fmt.Errorf("failed to fetch user: %v", err)
+	}
+
+	// Check if the user is currently locked out
+	if user.FailedAttempts >= maxFailedAttempts {
+		timeSinceLastFailed := time.Since(user.LastFailedLogin)
+		if timeSinceLastFailed < lockoutDuration {
+			return false, fmt.Errorf("account locked. Try again in %v", lockoutDuration-timeSinceLastFailed)
+		}
+
+		// Lockout period has expired; reset failed attempts
+		user.FailedAttempts = 0
+		if err := db.Save(&user).Error; err != nil {
+			return false, fmt.Errorf("failed to reset failed attempts: %v", err)
+		}
+	}
+
+	// Verify the password
+	authenticated := user.Password == input.Password // Replace with hashed password comparison in production
+	if !authenticated {
+		// Increment failed attempts
+		user.FailedAttempts++
+		user.LastFailedLogin = time.Now()
+		if err := db.Save(&user).Error; err != nil {
+			return false, fmt.Errorf("failed to update failed attempts: %v", err)
+		}
+
+		if user.FailedAttempts >= maxFailedAttempts {
+			return false, errors.New("account locked due to multiple failed attempts")
+		}
+
+		return false, errors.New("invalid username or password")
+	}
+
+	// Reset failed attempts on successful login
+	user.FailedAttempts = 0
+	if err := db.Save(&user).Error; err != nil {
+		return false, fmt.Errorf("failed to reset failed attempts: %v", err)
+	}
+
+	return true, nil
+}
+
+//Password Reset Functionality
+//If the user is locked out, send a password reset link:
+
+//Generate a Password Reset Token:
+
+//Create a secure token and save it in a PasswordResetTokens table along with its expiration time.
+//Send Reset Email:
+
+//Use an email service to send the reset link to the user's registered email address.
+func sendPasswordResetEmail(db *gorm.DB, email string) error {
+	// Fetch the user by email
+	var user models.User
+	if err := db.Where("email = ?", email).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return fmt.Errorf("no user found with the given email")
+		}
+		return fmt.Errorf("failed to fetch user: %v", err)
+	}
+
+	// Generate a secure reset token
+	resetToken := generateSecureToken()
+	resetExpiry := time.Now().Add(15 * time.Minute)
+
+	// Save the token in a password reset table
+	passwordReset := models.PasswordReset{
+		UserID:  user.Username,
+		Token:   resetToken,
+		Expires: resetExpiry,
+	}
+	if err := db.Create(&passwordReset).Error; err != nil {
+		return fmt.Errorf("failed to save password reset token: %v", err)
+	}
+
+	// Send the email (use an email service)
+	emailBody := fmt.Sprintf("Click the link to reset your password: https://example.com/reset?token=%s", resetToken)
+	if err := sendEmail(user.Email, "Password Reset Request", emailBody); err != nil {
+		return fmt.Errorf("failed to send password reset email: %v", err)
+	}
+
+	return nil
+}*/
 
