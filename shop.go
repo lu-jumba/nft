@@ -5,10 +5,20 @@ import (
 	"errors"
 	"time"
 
-	//"myproject/models" // Import the data package
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 )
 
+// HashPassword hashes a plaintext password using bcrypt.
+func HashPassword(password string) (string, error) {
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hashedPassword), nil
+}
+
+// CreateContract creates a contract, ensuring the password is hashed before creating a user.
 func createContract(db *gorm.DB, args string) (*Contract, error) {
 	// Parse the input JSON
 	dto := struct {
@@ -32,10 +42,16 @@ func createContract(db *gorm.DB, args string) (*Contract, error) {
 	var user User
 	err = db.Where("username = ?", dto.Username).First(&user).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) && dto.Password != "" {
+		// Hash the password
+		hashedPassword, err := HashPassword(dto.Password)
+		if err != nil {
+			return nil, errors.New("failed to hash password: " + err.Error())
+		}
+
 		// Create a new user
 		user = User{
 			Username:  dto.Username,
-			Password:  dto.Password,
+			Password:  hashedPassword,
 			FirstName: dto.FirstName,
 			LastName:  dto.LastName,
 		}
@@ -74,7 +90,7 @@ func createContract(db *gorm.DB, args string) (*Contract, error) {
 	return contract, nil
 }
 
-
+// CreateUser creates a user with a hashed password.
 func createUser(db *gorm.DB, args string) (*User, error) {
 	// Parse the input JSON
 	var user User
@@ -82,6 +98,13 @@ func createUser(db *gorm.DB, args string) (*User, error) {
 	if err != nil {
 		return nil, errors.New("invalid input: " + err.Error())
 	}
+
+	// Hash the password
+	hashedPassword, err := HashPassword(user.Password)
+	if err != nil {
+		return nil, errors.New("failed to hash password: " + err.Error())
+	}
+	user.Password = hashedPassword
 
 	// Check if the user already exists
 	var existingUser User

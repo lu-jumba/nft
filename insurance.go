@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	//"golang.org/x/crypto/bcrypt"
+
 )
 
 func listContractTypes(db *gorm.DB, args string) ([]ContractType, error) {
@@ -346,6 +349,45 @@ func getUser(db *gorm.DB, args string) (map[string]string, error) {
 	return response, nil
 }
 
+
+// UpdatePassword updates a user's password based on their username.
+func updatePassword(db *gorm.DB, args string) (bool, error) {
+	// Parse input arguments
+	var input struct {
+		Username    string `json:"username"`
+		NewPassword string `json:"new_password"`
+	}
+	if err := json.Unmarshal([]byte(args), &input); err != nil {
+		return false, fmt.Errorf("invalid input: %v", err)
+	}
+
+	// Validate input
+	if input.Username == "" || input.NewPassword == "" {
+		return false, errors.New("username and new password must not be empty")
+	}
+
+	// Fetch the user from the database
+	var user User
+	if err := db.Where("username = ?", input.Username).First(&user).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return false, fmt.Errorf("user not found")
+		}
+		return false, fmt.Errorf("failed to fetch user: %v", err)
+	}
+
+	// Hash the new password
+	hashedPassword, err := HashPassword(input.NewPassword)
+	if err != nil {
+		return false, fmt.Errorf("failed to hash password: %v", err)
+	}
+
+	// Update the password in the database
+	if err := db.Model(&user).Update("password", hashedPassword).Error; err != nil {
+		return false, fmt.Errorf("failed to update password: %v", err)
+	}
+
+	return true, nil
+}
 
 /*
 type User struct {
