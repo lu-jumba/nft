@@ -125,7 +125,30 @@ func (s ClaimStatus) MarshalJSON() ([]byte, error) {
 }
 
 
+/*
+func CreateUserAndAddress(db *gorm.DB, user User, address Address) error {
+    tx := db.Begin()
+    defer func() {
+        if r := recover(); r != nil {
+            tx.Rollback()
+        }
+    }()
 
+    if err := tx.Create(&user).Error; err != nil {
+        tx.Rollback()
+        return err
+    }
+
+    address.UserID = user.ID
+    if err := tx.Create(&address).Error; err != nil {
+        tx.Rollback()
+        return err
+    }
+
+    tx.Commit()
+    return nil
+}
+*/
 
 func (u *User) Contracts(db *gorm.DB) ([]Contract, error) {
 	var contracts []Contract
